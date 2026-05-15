@@ -1,66 +1,231 @@
-// app/page.tsx
-
 "use client";
 
-import { useState } from "react";
-import { FilePlus, FolderPlus, X } from "lucide-react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+import {
+  FilePlus,
+  FolderPlus,
+  Moon,
+  Search,
+  Sun,
+} from "lucide-react";
 
 import Tree from "@/components/FileExplorer/Tree";
 
-import { initialTree } from "@/data/initialTree";
 import { FileNode } from "@/components/FileExplorer/types/fileTree";
 import {
   addNode,
+  collectNodeIds,
+  deleteNode,
+  expandFolder,
+  findNode,
+  findParentFolderId,
+  hasNodeNameInFolder,
+  orderTreeNodes,
   renameNode,
   toggleFolder,
+  updateFileContent,
 } from "@/components/FileExplorer/utils/fileTree";
+import { filterTree } from "@/components/FileExplorer/utils/filterTree";
+import EditorPanel from "@/components/EditorPanel";
 
+const STORAGE_KEY = "vscode-file-explorer-tree";
 
-type CreateType = "file" | "folder" | null;
+type CreateNodeType = "file" | "folder";
+
+interface PendingCreate {
+  type: CreateNodeType;
+  parentFolderId: string | null;
+}
 
 export default function App() {
-  // =========================
-  // TREE STATE
-  // =========================
+  const [darkMode, setDarkMode] =
+    useState(true);
 
-  const [tree, setTree] = useState<FileNode[]>(initialTree);
-
-  // selected folder
+  const [tree, setTree] = useState<FileNode[]>([]);
   const [selectedFolderId, setSelectedFolderId] =
-    useState<string>("1");
+    useState<string | null>(null);
+  const [isLoaded, setIsLoaded] =
+    useState(false);
+  const [search, setSearch] = useState("");
+  const [openTabIds, setOpenTabIds] = useState<string[]>([]);
+  const [activeTabId, setActiveTabId] =
+    useState<string | null>(null);
 
-  // =========================
-  // MODAL STATE
-  // =========================
+  const [pendingCreate, setPendingCreate] =
+    useState<PendingCreate | null>(null);
+  const [createName, setCreateName] = useState("");
+  const [createError, setCreateError] = useState("");
 
-  const [openModal, setOpenModal] =
-    useState<CreateType>(null);
+  // Filtering is derived from the saved tree so clearing search never mutates folder state.
+  const filteredTree = useMemo(
+    () => filterTree(tree, search),
+    [search, tree]
+  );
 
-  const [inputValue, setInputValue] = useState("");
+  const openTabs = useMemo(
+    () =>
+      openTabIds
+        .map((fileId) => findNode(tree, fileId))
+        .filter(
+          (node): node is FileNode => node?.type === "file"
+        ),
+    [openTabIds, tree]
+  );
 
-  // =========================
-  // OPEN MODAL
-  // =========================
+  const isSearching = search.trim().length > 0;
 
-  const handleOpenModal = (type: CreateType) => {
-    setOpenModal(type);
-    setInputValue("");
+  const trimmedCreateName = createName.trim();
+
+  // Names only need to be unique next to their siblings, just like a real file explorer.
+  const hasCreateDuplicate =
+    !!pendingCreate &&
+    !!trimmedCreateName &&
+    hasNodeNameInFolder(
+      tree,
+      pendingCreate.parentFolderId,
+      trimmedCreateName
+    );
+
+  const inlineCreateError =
+    createError ||
+    (hasCreateDuplicate
+      ? `A file or folder named "${trimmedCreateName}" already exists here.`
+      : "");
+
+  const activeEditorTabId =
+    activeTabId &&
+    openTabs.some((tab) => tab.id === activeTabId)
+      ? activeTabId
+      : openTabs.at(-1)?.id ?? null;
+
+  useEffect(() => {
+    // localStorage is browser-only, so the tree is hydrated after the client mounts.
+    const loadTree = () => {
+      try {
+        const savedTree =
+          localStorage.getItem(STORAGE_KEY);
+
+        if (!savedTree) {
+          setTree([]);
+          setSelectedFolderId(null);
+          return;
+        }
+
+        const parsedTree = JSON.parse(savedTree);
+        const nextTree: FileNode[] = Array.isArray(parsedTree)
+          ? orderTreeNodes(parsedTree)
+          : [];
+
+        setTree(nextTree);
+        setSelectedFolderId(null);
+      } catch (error) {
+        console.error("Failed to load file tree:", error);
+        setTree([]);
+        setSelectedFolderId(null);
+      } finally {
+        setIsLoaded(true);
+      }
+    };
+
+    const timeoutId = window.setTimeout(loadTree, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, []);
+
+  useEffect(() => {
+    if (!isLoaded) return;
+
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify(tree)
+      );
+    } catch (error) {
+      console.error("Failed to save file tree:", error);
+    }
+  }, [isLoaded, tree]);
+
+  const resolveCreateParentFolderId = (
+    folderId?: string | null
+  ) => {
+    const requestedFolderId =
+      folderId === undefined ? selectedFolderId : folderId;
+
+    if (
+      requestedFolderId &&
+      findNode(tree, requestedFolderId)?.type === "folder"
+    ) {
+      return requestedFolderId;
+    }
+
+    return null;
   };
 
-  // =========================
-  // CLOSE MODAL
-  // =========================
+  const handleStartCreate = (
+    type: CreateNodeType,
+    folderId?: string | null
+  ) => {
+    if (!isLoaded) return;
 
-  const handleCloseModal = () => {
-    setOpenModal(null);
-    setInputValue("");
+    const parentFolderId =
+      resolveCreateParentFolderId(folderId);
+
+    setSearch("");
+    setCreateName("");
+    setCreateError("");
+    setPendingCreate({
+      type,
+      parentFolderId,
+    });
+
+    if (parentFolderId) {
+      setSelectedFolderId(parentFolderId);
+      setTree((prev) => expandFolder(prev, parentFolderId));
+    } else {
+      setSelectedFolderId(null);
+    }
   };
+
+  const handleCancelCreate = () => {
+    setPendingCreate(null);
+    setCreateName("");
+    setCreateError("");
+  };
+
+  const handleClearSelection = () => {
+    setSelectedFolderId(null);
+    handleCancelCreate();
+  };
+
   const handleRename = (
     nodeId: string,
     newName: string
   ) => {
+    const trimmedName = newName.trim();
+    const currentNode = findNode(tree, nodeId);
+    const parentFolderId = findParentFolderId(tree, nodeId);
+
+    if (
+      !trimmedName ||
+      !currentNode ||
+      parentFolderId === undefined ||
+      currentNode.name === trimmedName ||
+      hasNodeNameInFolder(
+        tree,
+        parentFolderId,
+        trimmedName,
+        nodeId
+      )
+    ) {
+      return;
+    }
+
     setTree((prev) =>
-      renameNode(prev, nodeId, newName)
+      renameNode(prev, nodeId, trimmedName)
     );
   };
 
@@ -68,19 +233,70 @@ export default function App() {
     setTree((prev) => toggleFolder(prev, folderId));
   };
 
-  // =========================
-  // CREATE NODE
-  // =========================
+  const handleDeleteNode = (nodeId: string) => {
+    const deletedNode = findNode(tree, nodeId);
+    // Closing tabs from the deleted subtree keeps the editor from pointing at stale nodes.
+    const deletedIds = deletedNode
+      ? collectNodeIds(deletedNode)
+      : [nodeId];
+    const nextOpenTabIds = openTabIds.filter(
+      (fileId) => !deletedIds.includes(fileId)
+    );
 
-  const handleCreateNode = () => {
-    if (!inputValue.trim()) return;
+    setOpenTabIds(nextOpenTabIds);
+    setActiveTabId((current) => {
+      if (current && deletedIds.includes(current)) {
+        return nextOpenTabIds.at(-1) ?? null;
+      }
 
-    const isFolder = openModal === "folder";
+      return current;
+    });
+
+    setTree((prev) => {
+      const nextTree = deleteNode(prev, nodeId);
+
+      setSelectedFolderId((current) => {
+        if (
+          current &&
+          findNode(nextTree, current)?.type === "folder"
+        ) {
+          return current;
+        }
+
+        return null;
+      });
+
+      return nextTree;
+    });
+  };
+
+  const handleCommitCreate = () => {
+    const trimmedName = trimmedCreateName;
+
+    if (!pendingCreate) return;
+
+    if (!trimmedName) {
+      setCreateError("Enter a name to create an item.");
+      return;
+    }
+
+    if (hasCreateDuplicate) {
+      setCreateError(
+        `A file or folder named "${trimmedName}" already exists here.`
+      );
+      return;
+    }
+
+    const isFolder = pendingCreate.type === "folder";
 
     const newNode: FileNode = {
       id: crypto.randomUUID(),
-      name: inputValue,
+      name: trimmedName,
       type: isFolder ? "folder" : "file",
+
+      ...(!isFolder && {
+        content: "",
+      }),
 
       ...(isFolder && {
         children: [],
@@ -88,152 +304,194 @@ export default function App() {
       }),
     };
 
-    setTree((prev) =>
-      addNode(prev, selectedFolderId, newNode)
-    );
+    setTree((prev) => {
+      const targetFolder = pendingCreate.parentFolderId
+        ? findNode(prev, pendingCreate.parentFolderId)
+        : null;
 
-    handleCloseModal();
+      if (
+        hasNodeNameInFolder(
+          prev,
+          pendingCreate.parentFolderId,
+          trimmedName
+        )
+      ) {
+        return prev;
+      }
+
+      if (
+        pendingCreate.parentFolderId &&
+        targetFolder?.type === "folder"
+      ) {
+        return addNode(
+          prev,
+          pendingCreate.parentFolderId,
+          newNode
+        );
+      }
+
+      return orderTreeNodes([...prev, newNode]);
+    });
+
+    if (!isFolder) {
+      setOpenTabIds((prev) =>
+        prev.includes(newNode.id) ? prev : [...prev, newNode.id]
+      );
+      setActiveTabId(newNode.id);
+    }
+
+    handleCancelCreate();
+  };
+
+  const handleOpenFile = (fileId: string) => {
+    const file = findNode(tree, fileId);
+
+    if (file?.type !== "file") return;
+
+    setOpenTabIds((prev) =>
+      prev.includes(fileId) ? prev : [...prev, fileId]
+    );
+    setActiveTabId(fileId);
+  };
+
+  const handleCloseTab = (fileId: string) => {
+    const currentIndex = openTabIds.indexOf(fileId);
+    const nextTabIds = openTabIds.filter((id) => id !== fileId);
+
+    setOpenTabIds(nextTabIds);
+
+    setActiveTabId((current) => {
+      if (current !== fileId) {
+        return current;
+      }
+
+      return (
+        nextTabIds[currentIndex] ??
+        nextTabIds[currentIndex - 1] ??
+        null
+      );
+    });
+  };
+
+  const handleContentChange = (
+    fileId: string,
+    content: string
+  ) => {
+    setTree((prev) =>
+      updateFileContent(prev, fileId, content)
+    );
   };
 
   return (
-    <main className="h-screen bg-neutral-950 text-white p-4 flex items-start justify-center">
-      {/* EXPLORER */}
-      <div className="w-80 bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden">
-        {/* HEADER */}
-        <div className="flex items-center justify-between px-3 py-2 border-b border-neutral-800">
-          <h2 className="text-sm font-semibold tracking-wide">
+    <main className={`vscode-app ${darkMode ? "dark" : ""}`}>
+      <div className="vscode-explorer">
+        <div className="vscode-header">
+          <h2 className="vscode-header-title">
             EXPLORER
           </h2>
 
-          {/* TOOLBAR */}
-          <div className="flex items-center gap-2">
-            {/* NEW FILE */}
+          <div className="flex items-center gap-1">
             <button
-              onClick={() => handleOpenModal("file")}
-              className="
-                p-1.5 rounded
-                hover:bg-neutral-800
-                transition
-              "
+              aria-label="New file"
+              title="New file"
+              onClick={() => handleStartCreate("file")}
+              disabled={!isLoaded}
+              className="vscode-icon-button"
             >
-              <FilePlus size={18} />
+              <FilePlus size={16} />
             </button>
 
-            {/* NEW FOLDER */}
             <button
-              onClick={() => handleOpenModal("folder")}
-              className="
-                p-1.5 rounded
-                hover:bg-neutral-800
-                transition
-              "
+              aria-label="New folder"
+              title="New folder"
+              onClick={() => handleStartCreate("folder")}
+              disabled={!isLoaded}
+              className="vscode-icon-button"
             >
-              <FolderPlus size={18} />
+              <FolderPlus size={16} />
+            </button>
+
+            <button
+              aria-label={
+                darkMode
+                  ? "Switch to light theme"
+                  : "Switch to dark theme"
+              }
+              title={
+                darkMode
+                  ? "Switch to light theme"
+                  : "Switch to dark theme"
+              }
+              onClick={() => setDarkMode((prev) => !prev)}
+              className="vscode-icon-button"
+            >
+              {darkMode ? (
+                <Sun size={16} />
+              ) : (
+                <Moon size={16} />
+              )}
             </button>
           </div>
         </div>
 
-        {/* TREE */}
-        <div className="p-2">
+        <div className="vscode-search">
+          <div className="vscode-search-field">
+            <Search
+              size={14}
+              className="vscode-search-icon"
+            />
+
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search"
+              className="vscode-input vscode-search-input"
+            />
+          </div>
+        </div>
+
+        <div className="vscode-tree-shell">
           <Tree
-            treeNode={tree}
+            treeNode={filteredTree}
+            keyboardEnabled={!pendingCreate}
+            creating={pendingCreate}
+            createValue={createName}
+            createError={inlineCreateError}
+            emptyTitle={
+              isSearching
+                ? "No matching files or folders"
+                : "No files or folders"
+            }
+            emptyDescription={
+              isSearching
+                ? "Clear search to show the full tree"
+                : "Use the toolbar above to create your first file or folder"
+            }
             onFolderSelect={setSelectedFolderId}
+            onClearSelection={handleClearSelection}
             onToggle={handleToggleFolder}
+            onCreate={handleStartCreate}
+            onCreateValueChange={(value) => {
+              setCreateName(value);
+              setCreateError("");
+            }}
+            onCommitCreate={handleCommitCreate}
+            onCancelCreate={handleCancelCreate}
+            onFileOpen={handleOpenFile}
             onRename={handleRename}
+            onDelete={handleDeleteNode}
           />
         </div>
       </div>
 
-      {/* MODAL */}
-      {openModal && (
-        <div
-          className="
-            fixed inset-0
-            bg-black/50
-            flex items-center justify-center
-          "
-        >
-          <div
-            className="
-              w-[340px]
-              bg-neutral-900
-              border border-neutral-800
-              rounded-xl
-              p-4
-            "
-          >
-            {/* TOP */}
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold">
-                Create New {openModal}
-              </h3>
-
-              <button
-                onClick={handleCloseModal}
-                className="p-1 hover:bg-neutral-800 rounded"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            {/* INPUT */}
-            <input
-              autoFocus
-              type="text"
-              value={inputValue}
-              onChange={(e) =>
-                setInputValue(e.target.value)
-              }
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  handleCreateNode();
-                }
-              }}
-              placeholder={
-                openModal === "file"
-                  ? "example.tsx"
-                  : "components"
-              }
-              className="
-                w-full
-                bg-neutral-800
-                border border-neutral-700
-                rounded-lg
-                px-3 py-2
-                outline-none
-                focus:border-blue-500
-              "
-            />
-
-            {/* ACTIONS */}
-            <div className="flex justify-end gap-2 mt-4">
-              <button
-                onClick={handleCloseModal}
-                className="
-                  px-4 py-2
-                  rounded-lg
-                  bg-neutral-800
-                  hover:bg-neutral-700
-                "
-              >
-                Cancel
-              </button>
-
-              <button
-                onClick={handleCreateNode}
-                className="
-                  px-4 py-2
-                  rounded-lg
-                  bg-blue-600
-                  hover:bg-blue-500
-                "
-              >
-                Create
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <EditorPanel
+        openTabs={openTabs}
+        activeTabId={activeEditorTabId}
+        isDarkMode={darkMode}
+        onTabSelect={setActiveTabId}
+        onTabClose={handleCloseTab}
+        onContentChange={handleContentChange}
+      />
     </main>
   );
 }

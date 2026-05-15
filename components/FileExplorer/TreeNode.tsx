@@ -1,52 +1,113 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import {
+  Fragment,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import {
   File,
   Folder,
   ChevronRight,
   ChevronDown,
-  Pencil,
 } from "lucide-react";
-import { FileNode } from "./types/fileTree";
+import ContextMenu from "./ContextMenu";
+import {
+  FileNode,
+  FileType,
+  PendingCreateNode,
+} from "./types/fileTree";
+import {
+  countDescendants,
+  getCreateInsertIndex,
+} from "./utils/fileTree";
 
 
 interface TreeNodeProps {
   node: FileNode;
 
+  parentFolderId?: string | null;
+
   level?: number;
 
   selectedId?: string;
 
+  renamingId: string | null;
+
+  renameValue: string;
+
+  deleteConfirmId: string | null;
+
+  creating: PendingCreateNode | null;
+
+  createValue: string;
+
+  createError: string;
+
   onToggle: (folderId: string) => void;
 
-  onSelect?: (node: FileNode) => void;
-
-  // rename callback
-  onRename: (
-    nodeId: string,
-    newName: string
+  onCreate: (
+    type: "file" | "folder",
+    folderId?: string | null
   ) => void;
+
+  onCreateValueChange: (value: string) => void;
+
+  onCommitCreate: () => void;
+
+  onCancelCreate: () => void;
+
+  onSelect?: (
+    node: FileNode,
+    options?: {
+      openFile?: boolean;
+    }
+  ) => void;
+
+  onStartRename: (node: FileNode) => void;
+
+  onRenameValueChange: (value: string) => void;
+
+  onCommitRename: (nodeId: string) => void;
+
+  onCancelOperation: () => void;
+
+  onRequestDelete: (nodeId: string) => void;
+
+  onConfirmDelete: (nodeId: string) => void;
 }
 
 export default function TreeNode({
   node,
+  parentFolderId = null,
   level = 0,
   selectedId,
+  renamingId,
+  renameValue,
+  deleteConfirmId,
+  creating,
+  createValue,
+  createError,
   onToggle,
+  onCreate,
+  onCreateValueChange,
+  onCommitCreate,
+  onCancelCreate,
   onSelect,
-  onRename,
+  onStartRename,
+  onRenameValueChange,
+  onCommitRename,
+  onCancelOperation,
+  onRequestDelete,
+  onConfirmDelete,
 }: TreeNodeProps) {
-  // =========================
-  // STATES
-  // =========================
-
-  const [isEditing, setIsEditing] =
-    useState(false);
-
-  const [editValue, setEditValue] =
-    useState(node.name);
+  const [contextMenu, setContextMenu] =
+    useState<{
+      x: number;
+      y: number;
+    } | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -54,86 +115,83 @@ export default function TreeNode({
 
   const isSelected = selectedId === node.id;
 
-  // =========================
-  // AUTO FOCUS
-  // =========================
+  const isEditing = renamingId === node.id;
+
+  const isDeleteConfirmOpen = deleteConfirmId === node.id;
+
+  const childCount = countDescendants(node);
+
+  const targetFolderId = isFolder
+    ? node.id
+    : parentFolderId;
+
+  const childNodes = node.children || [];
+  const isCreatingInThisFolder =
+    isFolder && creating?.parentFolderId === node.id;
+  const childCreateIndex = isCreatingInThisFolder
+    ? getCreateInsertIndex(childNodes, creating.type)
+    : -1;
 
   useEffect(() => {
     if (isEditing) {
       inputRef.current?.focus();
-
       inputRef.current?.select();
     }
   }, [isEditing]);
-
-  // =========================
-  // NODE CLICK
-  // =========================
 
   const handleClick = () => {
     if (isFolder) {
       onToggle(node.id);
     }
 
-    onSelect?.(node);
+    onSelect?.(node, {
+      openFile: !isFolder,
+    });
   };
 
-  // =========================
-  // START RENAME
-  // =========================
+  const handleContextMenu = (
+    e: React.MouseEvent
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    onSelect?.(node);
+
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+    });
+  };
 
   const handleStartRename = (
     e: React.MouseEvent
   ) => {
     e.stopPropagation();
 
-    setEditValue(node.name);
-
-    setIsEditing(true);
+    onStartRename(node);
   };
 
-  // =========================
-  // SAVE RENAME
-  // =========================
+  const handleRequestDelete = (
+    e: React.MouseEvent
+  ) => {
+    e.stopPropagation();
 
-  const handleSaveRename = () => {
-    const trimmed = editValue.trim();
-
-    if (!trimmed) {
-      setEditValue(node.name);
-
-      setIsEditing(false);
-
-      return;
-    }
-
-    onRename(node.id, trimmed);
-
-    setIsEditing(false);
+    onRequestDelete(node.id);
   };
 
   return (
     <div>
-      {/* NODE */}
       <div
         onClick={handleClick}
-        className={`
-          flex items-center justify-between
-          gap-2
-          px-2 py-1
-          cursor-pointer
-          hover:bg-neutral-800
-          rounded
-          group
-          ${isSelected ? "bg-neutral-800" : ""}
-        `}
+        onContextMenu={handleContextMenu}
+        className={`vscode-tree-row group ${
+          isSelected ? "is-selected" : ""
+        }`}
         style={{
           paddingLeft: `${level * 14 + 8}px`,
         }}
       >
-        {/* LEFT */}
         <div className="flex items-center gap-2 flex-1 min-w-0">
-          {/* CHEVRON */}
           {isFolder ? (
             node.isOpen ? (
               <ChevronDown size={16} />
@@ -144,49 +202,43 @@ export default function TreeNode({
             <div className="w-4" />
           )}
 
-          {/* ICON */}
           {isFolder ? (
             <Folder
               size={16}
-              className="text-yellow-400 shrink-0"
+              className="shrink-0"
+              style={{
+                color: "var(--folder-color)",
+              }}
             />
           ) : (
             <File
               size={16}
-              className="text-blue-400 shrink-0"
+              className="shrink-0"
+              style={{
+                color: "var(--file-color)",
+              }}
             />
           )}
 
-          {/* LABEL / INPUT */}
           {isEditing ? (
             <input
               ref={inputRef}
-              value={editValue}
+              value={renameValue}
               onChange={(e) =>
-                setEditValue(e.target.value)
+                onRenameValueChange(e.target.value)
               }
-              onBlur={handleSaveRename}
+              onBlur={() => onCommitRename(node.id)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
-                  handleSaveRename();
+                  onCommitRename(node.id);
                 }
 
                 if (e.key === "Escape") {
-                  setEditValue(node.name);
-
-                  setIsEditing(false);
+                  onCancelOperation();
                 }
               }}
               onClick={(e) => e.stopPropagation()}
-              className="
-                bg-neutral-700
-                border border-blue-500
-                rounded
-                px-1 py-0.5
-                outline-none
-                text-sm
-                w-full
-              "
+              className="vscode-input px-1 py-0.5 text-sm"
             />
           ) : (
             <span className="truncate text-sm">
@@ -195,42 +247,300 @@ export default function TreeNode({
           )}
         </div>
 
-        {/* RENAME BUTTON */}
         {!isEditing && (
-          <button
-            onClick={handleStartRename}
-            className="
-              opacity-0
-              group-hover:opacity-100
-              transition
-              p-1
-              hover:bg-neutral-700
-              rounded
-            "
+          <div
+            className="vscode-tree-actions"
           >
-            <Pencil size={14} />
-          </button>
+            <button
+              aria-label={`Rename ${node.name}`}
+              title="Rename"
+              onClick={handleStartRename}
+              className="vscode-action-button"
+            >
+              Rename
+            </button>
+
+            <button
+              aria-label={`Delete ${node.name}`}
+              title="Delete"
+              onClick={handleRequestDelete}
+              className="vscode-action-button vscode-action-button-danger"
+            >
+              Delete
+            </button>
+          </div>
         )}
       </div>
 
-      {/* CHILDREN */}
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onNewFile={() =>
+            onCreate("file", targetFolderId)
+          }
+          onNewFolder={() =>
+            onCreate("folder", targetFolderId)
+          }
+          onRename={() => onStartRename(node)}
+          onDelete={() => onRequestDelete(node.id)}
+        />
+      )}
+
+      {isDeleteConfirmOpen && (
+        <div
+          className="vscode-modal-backdrop"
+        >
+          <div
+            className="vscode-modal"
+          >
+            <h3 className="text-sm font-semibold mb-2">
+              Delete &quot;{node.name}&quot;?
+            </h3>
+
+            <p
+              className="text-sm mb-5"
+              style={{
+                color: "var(--text-secondary)",
+              }}
+            >
+              {childCount > 0 ? (
+                <>
+                  This folder contains{" "}
+                  <strong>{childCount}</strong>{" "}
+                  item{childCount > 1 ? "s" : ""}.
+                  <br />
+                  Deleting it will remove all nested files
+                  and folders.
+                </>
+              ) : (
+                "This action cannot be undone."
+              )}
+            </p>
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={onCancelOperation}
+                className="vscode-button"
+              >
+                Cancel
+              </button>
+
+              <button
+                onClick={() => onConfirmDelete(node.id)}
+                className="vscode-button vscode-button-danger"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isFolder &&
         node.isOpen &&
-        node.children && (
+        childNodes && (
           <div>
-            {node.children.map((child) => (
-              <TreeNode
-                key={child.id}
-                node={child}
-                level={level + 1}
-                selectedId={selectedId}
-                onToggle={onToggle}
-                onSelect={onSelect}
-                onRename={onRename}
-              />
+            {childNodes.map((child, index) => (
+              <Fragment key={child.id}>
+                {index === childCreateIndex && (
+                  <CreateTreeRow
+                    type={creating?.type ?? "file"}
+                    level={level + 1}
+                    value={createValue}
+                    error={createError}
+                    onValueChange={onCreateValueChange}
+                    onCommit={onCommitCreate}
+                    onCancel={onCancelCreate}
+                  />
+                )}
+
+                <TreeNode
+                  node={child}
+                  parentFolderId={
+                    isFolder ? node.id : parentFolderId
+                  }
+                  level={level + 1}
+                  selectedId={selectedId}
+                  renamingId={renamingId}
+                  renameValue={renameValue}
+                  deleteConfirmId={deleteConfirmId}
+                  creating={creating}
+                  createValue={createValue}
+                  createError={createError}
+                  onToggle={onToggle}
+                  onCreate={onCreate}
+                  onCreateValueChange={onCreateValueChange}
+                  onCommitCreate={onCommitCreate}
+                  onCancelCreate={onCancelCreate}
+                  onSelect={onSelect}
+                  onStartRename={onStartRename}
+                  onRenameValueChange={onRenameValueChange}
+                  onCommitRename={onCommitRename}
+                  onCancelOperation={onCancelOperation}
+                  onRequestDelete={onRequestDelete}
+                  onConfirmDelete={onConfirmDelete}
+                />
+              </Fragment>
             ))}
+
+            {childCreateIndex === childNodes.length && (
+              <CreateTreeRow
+                type={creating?.type ?? "file"}
+                level={level + 1}
+                value={createValue}
+                error={createError}
+                onValueChange={onCreateValueChange}
+                onCommit={onCommitCreate}
+                onCancel={onCancelCreate}
+              />
+            )}
           </div>
         )}
+    </div>
+  );
+}
+
+interface CreateTreeRowProps {
+  type: FileType;
+  level: number;
+  value: string;
+  error: string;
+  onValueChange: (value: string) => void;
+  onCommit: () => void;
+  onCancel: () => void;
+}
+
+export function CreateTreeRow({
+  type,
+  level,
+  value,
+  error,
+  onValueChange,
+  onCommit,
+  onCancel,
+}: CreateTreeRowProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const handledRef = useRef(false);
+  const isFolder = type === "folder";
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  useEffect(() => {
+    if (error) {
+      inputRef.current?.focus();
+    }
+  }, [error]);
+
+  useEffect(() => {
+    handledRef.current = false;
+  }, [error, value]);
+
+  const commit = () => {
+    if (handledRef.current) return;
+
+    handledRef.current = true;
+    onCommit();
+    window.setTimeout(() => {
+      handledRef.current = false;
+    }, 0);
+  };
+
+  const cancel = () => {
+    if (handledRef.current) return;
+
+    handledRef.current = true;
+    onCancel();
+    window.setTimeout(() => {
+      handledRef.current = false;
+    }, 0);
+  };
+
+  return (
+    <div className="vscode-tree-create">
+      <div
+        className="vscode-tree-row vscode-tree-create-row"
+        style={{
+          paddingLeft: `${level * 14 + 8}px`,
+        }}
+      >
+        <div className="flex items-center gap-2 flex-1 min-w-0">
+          <div className="w-4" />
+
+          {isFolder ? (
+            <Folder
+              size={16}
+              className="shrink-0"
+              style={{
+                color: "var(--folder-color)",
+              }}
+            />
+          ) : (
+            <File
+              size={16}
+              className="shrink-0"
+              style={{
+                color: "var(--file-color)",
+              }}
+            />
+          )}
+
+          <input
+            ref={inputRef}
+            value={value}
+            onChange={(event) =>
+              onValueChange(event.target.value)
+            }
+            onBlur={() => {
+              if (error) {
+                window.setTimeout(() => {
+                  inputRef.current?.focus();
+                }, 0);
+                return;
+              }
+
+              if (value.trim()) {
+                commit();
+              } else {
+                cancel();
+              }
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                commit();
+              }
+
+              if (event.key === "Escape") {
+                event.preventDefault();
+                cancel();
+              }
+            }}
+            onClick={(event) => event.stopPropagation()}
+            placeholder={
+              isFolder ? "New folder" : "New file"
+            }
+            className={`vscode-input vscode-tree-create-input ${
+              error ? "is-error" : ""
+            }`}
+          />
+        </div>
+      </div>
+
+      {error && (
+        <p
+          className="vscode-inline-error"
+          style={{
+            paddingLeft: `${level * 14 + 44}px`,
+          }}
+        >
+          {error}
+        </p>
+      )}
     </div>
   );
 }
